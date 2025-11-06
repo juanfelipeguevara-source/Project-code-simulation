@@ -2,10 +2,8 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-
 from astropy import units as u
-from poliastro.bodies import Earth
-from poliastro.twobody import Orbit
+from astropy import constants as const
 
 # --- Configuración de la Página ---
 st.set_page_config(
@@ -14,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Configurar matplotlib para usar backend Agg (mejor para entornos virtuales)
+# Configurar matplotlib para usar backend Agg
 plt.switch_backend('Agg')
 
 st.title("🛰️ Calculadora de Corrección Orbital")
@@ -23,8 +21,18 @@ Esta aplicación calcula la maniobra (Transferencia de Hohmann) necesaria para
 pasar de una órbita inicial a una órbita objetivo, cumpliendo con tus requisitos.
 """)
 
-# --- Constante Radio Terrestre ---
-R_EARTH_KM = Earth.R.to(u.km).value
+# --- Constantes ---
+R_EARTH_KM = 6378.137  # Radio terrestre en km
+MU_EARTH = 398600.4418  # Parámetro gravitacional terrestre en km³/s²
+
+# --- Funciones auxiliares ---
+def calc_period(a_km):
+    """Calcula el periodo orbital en segundos"""
+    return 2 * np.pi * np.sqrt(a_km**3 / MU_EARTH)
+
+def calc_velocity(r_km, a_km):
+    """Calcula la velocidad en una órbita en km/s"""
+    return np.sqrt(MU_EARTH * (2/r_km - 1/a_km))
 
 # --- Columna de Entradas (Inputs) ---
 st.sidebar.header("Parámetros de Entrada")
@@ -47,86 +55,53 @@ alt_target = st.sidebar.slider(
 st.sidebar.subheader("3. Info del Satélite")
 sat_mass = st.sidebar.number_input("Masa del Satélite (kg)", 10.0, 5000.0, 100.0)
 
-# --- Validaciones y Creación de Órbitas ---
+# --- Validaciones ---
 if alt_p_inicial > alt_a_inicial:
     st.error("Error: La altitud del perigeo inicial no puede ser mayor que la del apogeo.")
     st.stop()
 
+# --- Calcular parámetros orbitales ---
 try:
-    # Creando la órbita inicial
-    r_p_inicial = (R_EARTH_KM + alt_p_inicial) * u.km
-    r_a_inicial = (R_EARTH_KM + alt_a_inicial) * u.km
-    
-    # Calcular semieje mayor y excentricidad
+    # Órbita inicial
+    r_p_inicial = R_EARTH_KM + alt_p_inicial
+    r_a_inicial = R_EARTH_KM + alt_a_inicial
     a_inicial = (r_p_inicial + r_a_inicial) / 2
     ecc_inicial = (r_a_inicial - r_p_inicial) / (r_a_inicial + r_p_inicial)
+    period_inicial = calc_period(a_inicial)
     
-    orb_inicial = Orbit.from_classical(
-        Earth,
-        a_inicial,
-        ecc_inicial,
-        0 * u.deg,
-        0 * u.deg,
-        0 * u.deg,
-        0 * u.deg
-    )
-
-    # Creando la órbita objetivo (circular)
-    r_target = (R_EARTH_KM + alt_target) * u.km
-    orb_target = Orbit.from_classical(
-        Earth,
-        r_target,
-        0 * u.one,
-        0 * u.deg,
-        0 * u.deg,
-        0 * u.deg,
-        0 * u.deg
-    )
-
-except Exception as e:
-    st.error(f"Error al crear las órbitas: {e}")
-    st.stop()
-
-# --- Cálculos de Transferencia de Hohmann ---
-st.header("Resultados de la Corrección")
-
-try:
-    mu = Earth.k.to(u.km**3 / u.s**2).value
+    # Órbita objetivo (circular)
+    r_target = R_EARTH_KM + alt_target
+    a_target = r_target
+    ecc_target = 0.0
+    period_target = calc_period(a_target)
     
-    r1 = orb_inicial.r_p.to(u.km).value
-    r2 = orb_target.a.to(u.km).value
-    
+    # Órbita de transferencia
+    r1 = r_p_inicial
+    r2 = r_target
     a_transfer = (r1 + r2) / 2
+    ecc_transfer = (r2 - r1) / (r2 + r1)
+    period_transfer = calc_period(a_transfer)
     
-    v1_inicial = np.sqrt(mu * (2/r1 - 1/orb_inicial.a.to(u.km).value))
-    v1_transfer = np.sqrt(mu * (2/r1 - 1/a_transfer))
+    # Cálculo de Delta-V
+    v1_inicial = calc_velocity(r1, a_inicial)
+    v1_transfer = calc_velocity(r1, a_transfer)
     dv1_mag = abs(v1_transfer - v1_inicial)
     
-    v2_transfer = np.sqrt(mu * (2/r2 - 1/a_transfer))
-    v2_circular = np.sqrt(mu / r2)
+    v2_transfer = calc_velocity(r2, a_transfer)
+    v2_circular = calc_velocity(r2, a_target)
     dv2_mag = abs(v2_circular - v2_transfer)
     
     dv_total = dv1_mag + dv2_mag
     
-    ecc_transfer = (r2 - r1) / (r2 + r1)
-    orb_transfer = Orbit.from_classical(
-        Earth,
-        a_transfer * u.km,
-        ecc_transfer * u.one,
-        0 * u.deg,
-        0 * u.deg,
-        0 * u.deg,
-        0 * u.deg
-    )
-    
-    T_transfer = np.pi * np.sqrt(a_transfer**3 / mu)
+    # Tiempo de transferencia (medio periodo de la órbita de transferencia)
+    T_transfer = period_transfer / 2
 
 except Exception as e:
-    st.error(f"Error al calcular la maniobra de Hohmann: {e}")
-    st.write(f"Detalles del error: {type(e).__name__}: {str(e)}")
+    st.error(f"Error al calcular: {e}")
     st.stop()
 
 # --- Sección de Salidas (Outputs) ---
+st.header("Resultados de la Corrección")
 
 st.subheader(r"🚀 $\Delta V$ (Delta-V) Requerido") 
 st.write("Se asume una Transferencia de Hohmann. Ambos impulsos son **Progrados** (en dirección de la velocidad).")
@@ -142,8 +117,8 @@ st.subheader("📉 Error Orbital (vs. Objetivo)")
 col1, col2 = st.columns(2)
 with col1:
     st.write("**Antes de la Corrección (Inicial):**")
-    err_p_antes = (orb_inicial.r_p.to(u.km).value - orb_target.r_p.to(u.km).value)
-    err_a_antes = (orb_inicial.r_a.to(u.km).value - orb_target.r_a.to(u.km).value)
+    err_p_antes = r_p_inicial - r_target
+    err_a_antes = r_a_inicial - r_target
     st.metric("Error en Perigeo", f"{err_p_antes:.1f} km")
     st.metric("Error en Apogeo", f"{err_a_antes:.1f} km")
 with col2:
@@ -155,25 +130,25 @@ st.subheader("🪐 Comparativa de Parámetros Orbitales")
 data = {
     "Parámetro": ["Semieje Mayor (a)", "Excentricidad (e)", "Altitud Perigeo", "Altitud Apogeo", "Periodo"],
     "Inicial": [
-        f"{orb_inicial.a.to(u.km).value:.1f} km",
-        f"{orb_inicial.ecc:.4f}",
-        f"{(orb_inicial.r_p.to(u.km).value - R_EARTH_KM):.1f} km",
-        f"{(orb_inicial.r_a.to(u.km).value - R_EARTH_KM):.1f} km",
-        f"{orb_inicial.period.to(u.min).value:.1f} min"
+        f"{a_inicial:.1f} km",
+        f"{ecc_inicial:.4f}",
+        f"{alt_p_inicial:.1f} km",
+        f"{alt_a_inicial:.1f} km",
+        f"{period_inicial/60:.1f} min"
     ],
     "Transferencia": [
-        f"{orb_transfer.a.to(u.km).value:.1f} km",
-        f"{orb_transfer.ecc:.4f}",
-        f"{(orb_transfer.r_p.to(u.km).value - R_EARTH_KM):.1f} km",
-        f"{(orb_transfer.r_a.to(u.km).value - R_EARTH_KM):.1f} km",
-        f"{orb_transfer.period.to(u.min).value:.1f} min"
+        f"{a_transfer:.1f} km",
+        f"{ecc_transfer:.4f}",
+        f"{alt_p_inicial:.1f} km",
+        f"{alt_target:.1f} km",
+        f"{period_transfer/60:.1f} min"
     ],
     "Final (Objetivo)": [
-        f"{orb_target.a.to(u.km).value:.1f} km",
-        f"{orb_target.ecc:.4f}",
-        f"{(orb_target.r_p.to(u.km).value - R_EARTH_KM):.1f} km",
-        f"{(orb_target.r_a.to(u.km).value - R_EARTH_KM):.1f} km",
-        f"{orb_target.period.to(u.min).value:.1f} min"
+        f"{a_target:.1f} km",
+        f"{ecc_target:.4f}",
+        f"{alt_target:.1f} km",
+        f"{alt_target:.1f} km",
+        f"{period_target/60:.1f} min"
     ]
 }
 st.dataframe(pd.DataFrame(data).set_index("Parámetro"), use_container_width=True)
@@ -187,18 +162,16 @@ with col_graf1:
     
     fig, ax = plt.subplots(figsize=(8, 8))
     
-    def plot_orbit(orbit, label, color, linestyle='-'):
+    def plot_orbit(a, e, label, color, linestyle='-'):
         nus = np.linspace(0, 2*np.pi, 200)
-        a_val = orbit.a.to(u.km).value
-        e_val = orbit.ecc
-        rs = a_val * (1 - e_val**2) / (1 + e_val * np.cos(nus))
+        rs = a * (1 - e**2) / (1 + e * np.cos(nus))
         xs = rs * np.cos(nus)
         ys = rs * np.sin(nus)
         ax.plot(xs, ys, label=label, color=color, linestyle=linestyle, linewidth=2)
     
-    plot_orbit(orb_inicial, "Órbita Inicial", "blue")
-    plot_orbit(orb_target, "Órbita Objetivo", "green", "--")
-    plot_orbit(orb_transfer, "Órbita de Transferencia", "red", ":")
+    plot_orbit(a_inicial, ecc_inicial, "Órbita Inicial", "blue")
+    plot_orbit(a_target, ecc_target, "Órbita Objetivo", "green", "--")
+    plot_orbit(a_transfer, ecc_transfer, "Órbita de Transferencia", "red", ":")
     
     circle = plt.Circle((0, 0), R_EARTH_KM, color='lightblue', label='Tierra', zorder=10)
     ax.add_patch(circle)
@@ -212,7 +185,6 @@ with col_graf1:
     ax.legend(loc='upper right')
     ax.set_title('Vista Orbital 2D', fontsize=14, fontweight='bold')
     
-    # Cerrar la figura después de mostrarla para liberar memoria
     st.pyplot(fig)
     plt.close(fig)
 
@@ -222,11 +194,11 @@ with col_graf2:
     anomalies_deg = np.linspace(0, 360, 400)
     anomalies_rad = np.radians(anomalies_deg)
     
-    r_inicial = orb_inicial.a.to(u.km).value * (1 - orb_inicial.ecc**2) / (1 + orb_inicial.ecc * np.cos(anomalies_rad))
-    r_target = orb_target.a.to(u.km).value * (1 - orb_target.ecc**2) / (1 + orb_target.ecc * np.cos(anomalies_rad))
+    r_inicial_plot = a_inicial * (1 - ecc_inicial**2) / (1 + ecc_inicial * np.cos(anomalies_rad))
+    r_target_plot = a_target * (1 - ecc_target**2) / (1 + ecc_target * np.cos(anomalies_rad))
     
-    alt_inicial_plot = r_inicial - R_EARTH_KM
-    alt_target_plot = r_target - R_EARTH_KM
+    alt_inicial_plot = r_inicial_plot - R_EARTH_KM
+    alt_target_plot = r_target_plot - R_EARTH_KM
     
     fig_params, ax_params = plt.subplots(figsize=(8, 6))
     ax_params.plot(anomalies_deg, alt_inicial_plot, label="Altitud Inicial", linewidth=2, color='blue')
@@ -240,7 +212,6 @@ with col_graf2:
     ax_params.grid(True, alpha=0.3)
     ax_params.set_title('Variación de Altitud en la Órbita', fontsize=14, fontweight='bold')
     
-    # Cerrar la figura después de mostrarla para liberar memoria
     st.pyplot(fig_params)
     plt.close(fig_params)
 
